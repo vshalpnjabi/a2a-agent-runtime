@@ -40,19 +40,23 @@ def _build_opener(url):
     return urllib.request.build_opener()
 
 
-def send_message(to, text, server_url=None, key_file=None):
+def send_message(to, text, server_url=None, key_file=None, sender=None):
     """
     Send an async message to another agent.
     Returns message_id. Raises on failure.
     """
     server_url = server_url or os.environ.get("A2A_SERVER_URL", DEFAULT_SERVER_URL)
     key_file = key_file or os.environ.get("A2A_SEND_KEY_FILE", DEFAULT_KEY_FILE)
+    # Sender identity: explicit arg > env var > None (server derives from key)
+    sender = sender or os.environ.get("A2A_SENDER_ID")
 
     with open(key_file) as f:
         agent_key = f.read().strip()
 
     url = f"{server_url}/v1/agents/{to}/message"
     payload = {"text": text}
+    if sender:
+        payload["from"] = sender
 
     req = urllib.request.Request(
         url,
@@ -79,6 +83,7 @@ def main():
     parser.add_argument("--file", help="Read message text from file")
     parser.add_argument("--server-url", help="Override server URL")
     parser.add_argument("--key-file", help="Override agent key file path")
+    parser.add_argument("--from", dest="sender", help="Sender agent ID (defaults to A2A_SENDER_ID env var)")
     parser.add_argument("--quiet", action="store_true", help="Only output message_id")
     args = parser.parse_args()
 
@@ -96,6 +101,7 @@ def main():
             text=text,
             server_url=args.server_url,
             key_file=args.key_file,
+            sender=args.sender,
         )
         if args.quiet:
             print(msg_id)
