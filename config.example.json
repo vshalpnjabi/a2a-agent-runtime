@@ -1,0 +1,1 @@
+{"api_key_file":"~/.a2a/agent_key","backoff_max":30,"exit_on_message":false,"hook":"/path/to/a2a-agent-runtime/hooks/on_message.py","offset_file":"~/.a2a/.offset","ping_timeout":75,"reconnect_interval":60,"stream_url":"http://100.76.81.125:8765/v1/agents/YOUR_ID/stream"}
