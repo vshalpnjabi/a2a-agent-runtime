@@ -35,14 +35,16 @@ Server (Mini)                Agent VM
                                                        │
                                       ┌────────────────┘
                                       ▼
-                             ┌─────────────────┐
-                             │ wake_check.sh   │◀── Hatch cron (30s)
-                             │ (outputs msgs)  │    silent when empty
-                             └────────┬────────┘
-                                      │ messages pending
+                             ┌─────────────────────┐
+                             │ a2a-spool-watch.sh  │◀── Hatch hook (5s)
+                             │ (pure shell)        │    silent=zero tokens
+                             └────────┬────────────┘
+                                      │ wake on messages
                                       ▼
                              ┌─────────────────┐
-                             │ Agent wakes,    │
+                             │ Worker wakes    │
+                             │ with TASK_ID/   │
+                             │ FROM/TEXT,      │
                              │ replies via     │
                              │ a2a_send.py     │
                              └─────────────────┘
@@ -88,16 +90,31 @@ nohup bash /path/to/a2a-agent-runtime/wrappers/stream_wrapper.sh ~/.a2a/config.j
 
 The wrapper keeps the stream alive forever, restarting on crash.
 
-### 4. Set Up the Wake (Hatch Cron)
+### 4. Set Up the Wake (Shell-Only Hook — Zero Tokens When Idle)
 
-Create a Hatch cron job:
+This uses a Hatch event hook (pure shell, no LLM) — not a cron worker.
 
-- **Name:** `a2a-wake-check`
-- **Schedule:** Every 30 seconds
-- **Command:** `bash /path/to/a2a-agent-runtime/hatch/wake_check.sh`
-- **Behavior:** Only wake the agent when the script produces output
+1. Copy the hook script:
+   ```bash
+   cp hooks/a2a-spool-watch.sh ~/hooks/scripts/
+   chmod +x ~/hooks/scripts/a2a-spool-watch.sh
+   ```
 
-When `wake_check.sh` outputs nothing (no pending messages), the worker exits silently — zero tokens. When messages are pending, it outputs `TASK_ID`, `FROM`, and `TEXT` for each, which wakes the agent to reply.
+2. Register it as a Hatch hook (create `~/hooks/definitions/a2a-spool-watch.json`):
+   ```json
+   {
+     "version": 1,
+     "id": "a2a-spool-watch",
+     "enabled": true,
+     "script_path": "~/hooks/scripts/a2a-spool-watch.sh",
+     "prompt": "Output the payload's \"handoff\" field verbatim. For each TASK_ID/FROM/TEXT: compose a direct reply and send via a2a_send.py.",
+     "poll_interval_secs": 5,
+     "script_timeout_secs": 600,
+     "delivery": {"surface": "main"}
+   }
+   ```
+
+The hook runs every 5 seconds (pure shell). When the spool is empty, it calls `silent` — no worker wakes, zero tokens. When messages are pending, it calls `wake` with the TASK_ID/FROM/TEXT payload, which wakes a worker to reply.
 
 ### 5. Send Messages
 
