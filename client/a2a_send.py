@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-A2A async message sender — shared client for all agents.
+Unified A2A async send interface — used by Vi, Grok crew agents, and any peers.
 
-Sends a message via POST /v1/agents/{target}/message.
-Returns immediately with the message_id. Does NOT wait for a reply
-(that's what the stream is for).
+POSTs {to, text} to the agent's OWN server /v1/send (or /v1/crew/{id}/send).
+The server resolves the recipient through the network directory and delivers
+directly to the recipient's server. Returns immediately with the message_id.
+Does NOT wait for a reply (that's what the stream is for).
 
 Usage:
-  python3 a2a_send.py --to vi --text "Hello"
-  python3 a2a_send.py --to grok --text "Hello" --key-file ~/.a2a/agent_key
-  python3 a2a_send.py --to vi --file /path/to/message.txt
+  python3 a2a_send.py --to grok-alpha --text "Hello"
+  python3 a2a_send.py --to grok-alpha --file /path/to/message.txt
 
   # As a library:
   from a2a_send import send_message
-  msg_id = send_message(to="vi", text="Hello")
+  msg_id = send_message(to="grok-alpha", text="Hello")
 
 Config (env or args):
-  A2A_SERVER_URL     — default http://100.76.81.125:8765
-  A2A_SEND_KEY_FILE  — default ~/.a2a/agent_key (your agent key)
-  A2A_PROXY          — optional HTTP proxy (e.g. for tailnet from sandbox)
+  A2A_SEND_URL      default http://100.76.81.125:8771/v1/send (Vi's own server)
+  A2A_SEND_KEY_FILE default ~/.a2a_network_key (the agent's network key)
+  A2A_PROXY         optional http proxy (tailnet from sandbox needs :3130)
 """
 
 import argparse
@@ -27,63 +27,61 @@ import os
 import sys
 import urllib.request
 
-DEFAULT_SERVER_URL = "http://100.76.81.125:8765"
-DEFAULT_KEY_FILE = os.path.expanduser("~/.a2a/agent_key")
+DEFAULT_URL = "http://100.76.81.125:8771/v1/send"
+DEFAULT_KEY_FILE = os.path.expanduser("~/.a2a_network_key")
 
 
 def _build_opener(url):
-    """Route tailnet IPs through the :3130 CONNECT proxy if needed."""
     proxy = os.environ.get("A2A_PROXY")
-    if proxy and ("100." in url or "192.168." in url):
-        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        return urllib.request.build_opener(handler)
+    if not proxy and ("100." in url or "192.168." in url or ".local" in url):
+        # Tailnet from the sandbox must go through the :3130 CONNECT proxy.
+        proxy = "http://hatch-egress-proxy:3130"
+    if proxy:
+        return urllib.request.build_opener(urllib.request.ProxyHandler(
+            {"http": proxy, "https": proxy}))
     return urllib.request.build_opener()
 
 
-def send_message(to, text, server_url=None, key_file=None, sender=None):
+def send_message(to, text, context_id=None, url=None, key_file=None):
     """
-    Send an async message to another agent.
-    Returns message_id. Raises on failure.
+    Send an async message via the agent's own server. Returns message_id.
+    Raises on failure.
     """
-    server_url = server_url or os.environ.get("A2A_SERVER_URL", DEFAULT_SERVER_URL)
+    url = url or os.environ.get("A2A_SEND_URL", DEFAULT_URL)
     key_file = key_file or os.environ.get("A2A_SEND_KEY_FILE", DEFAULT_KEY_FILE)
-    # Sender identity: explicit arg > env var > None (server derives from key)
-    sender = sender or os.environ.get("A2A_SENDER_ID")
 
     with open(key_file) as f:
-        agent_key = f.read().strip()
+        key = f.read().strip()
 
-    url = f"{server_url}/v1/agents/{to}/message"
-    payload = {"text": text}
-    if sender:
-        payload["from"] = sender
+    payload = {"to": to, "text": text}
+    if context_id:
+        payload["context_id"] = context_id
 
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
         headers={
-            "Authorization": f"Bearer {agent_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         },
-        method="POST",
+        method="POST"
     )
 
-    opener = _build_opener(server_url)
-    with opener.open(req, timeout=10) as resp:
+    with _build_opener(url).open(req, timeout=15) as resp:
         result = json.loads(resp.read().decode())
-        if not result.get("ok", True) and result.get("error"):
-            raise RuntimeError(f"Send failed: {result['error']}")
-        return result.get("message_id", result.get("id", "sent"))
+        if not result.get("ok"):
+            raise RuntimeError(f"Send failed: {result}")
+        return result.get("message_id")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="A2A async message sender")
-    parser.add_argument("--to", required=True, help="Recipient agent ID")
+    parser = argparse.ArgumentParser(description="Unified A2A async send (via own server)")
+    parser.add_argument("--to", required=True, help="Recipient agent id")
     parser.add_argument("--text", help="Message text")
     parser.add_argument("--file", help="Read message text from file")
-    parser.add_argument("--server-url", help="Override server URL")
-    parser.add_argument("--key-file", help="Override agent key file path")
-    parser.add_argument("--from", dest="sender", help="Sender agent ID (defaults to A2A_SENDER_ID env var)")
+    parser.add_argument("--context-id", help="Optional context ID")
+    parser.add_argument("--url", help="Override send URL")
+    parser.add_argument("--key-file", help="Override key file")
     parser.add_argument("--quiet", action="store_true", help="Only output message_id")
     args = parser.parse_args()
 
@@ -99,9 +97,9 @@ def main():
         msg_id = send_message(
             to=args.to,
             text=text,
-            server_url=args.server_url,
+            context_id=args.context_id,
+            url=args.url,
             key_file=args.key_file,
-            sender=args.sender,
         )
         if args.quiet:
             print(msg_id)
